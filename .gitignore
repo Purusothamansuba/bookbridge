@@ -1,0 +1,66 @@
+# Compiled Java classes
+*.class
+
+# JAR files
+*.jar
+*.war
+*.ear
+
+# JVM crash logs
+hs_err_pid*
+replay_pid*
+
+
+mysql-connector-j-9.7.0/
+# macOS
+.DS_Store
+
+# IntelliJ IDEA
+.idea/
+*.iml
+out/
+
+# VS Code
+.vscode/
+
+# Eclipse
+.project
+.classpath
+.settings/
+bin/
+
+# NetBeans
+nbproject/
+build/
+dist/
+
+# Maven
+target/
+
+# Gradle
+.gradle/
+build/
+
+# Logs
+*.log
+
+# Environment files
+.env
+
+# Database files (optional)
+*.db
+*.sqlite
+*.sqlite3
+
+# MySQL dump backups (optional)
+*.sql.bak
+
+# Temporary files
+*.tmp
+*.temp
+
+# Zed Editor
+.zed/
+
+# OS files
+Thumbs.db
