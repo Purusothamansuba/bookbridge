@@ -1,4 +1,4 @@
-package com.bookbridge;
+package com.bookbridge.client.ui;
 
 import java.io.IOException;
 

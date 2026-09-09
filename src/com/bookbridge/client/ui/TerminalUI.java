@@ -1,4 +1,4 @@
-package com.bookbridge;
+package com.bookbridge.client.ui;
 
 public class TerminalUI {
 
@@ -68,35 +68,41 @@ public class TerminalUI {
 
     public static void title(String text) {
         move(2, 3);
-
         System.out.print(CYAN + BOLD);
-
         int left = (WIDTH - text.length()) / 2;
-
         repeat(" ", left);
-
         System.out.print(text);
-
         System.out.print(RESET);
+    }
+
+    /* Fix: Overwrite safely without deleting the right boundary line */
+    public static void drawItem(String item, int index, boolean selected) {
+        int row = 6 + index;
+
+        // Move to inside the left border
+        move(row, 2);
+
+        // Pad to exactly 58 characters so it perfectly fills the box without hitting the right border
+        if (selected) {
+            System.out.print(
+                BG_GREEN + WHITE + String.format(" ► %-56s", item) + RESET
+            );
+        } else {
+            System.out.print(String.format("   %-56s", item));
+        }
     }
 
     public static void separator(int row) {
         move(row, 1);
-
         System.out.print("╠");
-
         repeat("═", WIDTH - 2);
-
         System.out.print("╣");
     }
 
     public static void footer(String text) {
         move(22, 3);
-
         System.out.print(YELLOW);
-
         System.out.print(text);
-
         System.out.print(RESET);
     }
 
@@ -105,26 +111,7 @@ public class TerminalUI {
         for (int i = 0; i < items.length; i++) {
             drawItem(items[i], i, i == selected);
         }
-
         System.out.flush();
-    }
-
-    /* Draw only one menu row */
-    public static void drawItem(String item, int index, boolean selected) {
-        int row = 6 + index;
-
-        move(row, 5);
-
-        System.out.print("\033[K");
-
-        if (selected) {
-            System.out.print(BG_GREEN);
-            System.out.print(WHITE);
-            System.out.printf("► %-45s", item);
-            System.out.print(RESET);
-        } else {
-            System.out.printf("  %-45s", item);
-        }
     }
 
     /* Update only two rows */
@@ -134,9 +121,7 @@ public class TerminalUI {
         int newSelection
     ) {
         drawItem(items[oldSelection], oldSelection, false);
-
         drawItem(items[newSelection], newSelection, true);
-
         System.out.flush();
     }
 
