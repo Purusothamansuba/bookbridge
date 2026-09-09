@@ -24,6 +24,7 @@ import java.util.*;
 public class WebUI {
 
     private static final int PORT = 8081;
+    private static final String COOKIE_NAME = "BB_SESSION";
 
     public static void start() throws Exception {
         HttpServer server = HttpServer.create(new InetSocketAddress(PORT), 0);
@@ -263,7 +264,6 @@ public class WebUI {
                 "    .badge-red { background: rgba(244, 63, 94, 0.15); color: #fda4af; border: 1px solid rgba(244, 63, 94, 0.3); }\n" +
                 "    .badge-blue { background: rgba(99, 102, 241, 0.15); color: #a5b4fc; border: 1px solid rgba(99, 102, 241, 0.3); }\n" +
                 "    .badge-amber { background: rgba(245, 158, 11, 0.15); color: #fde68a; border: 1px solid rgba(245, 158, 11, 0.3); }\n" +
-                "    .badge-purple { background: rgba(168, 85, 247, 0.15); color: #d8b4fe; border: 1px solid rgba(168, 85, 247, 0.3); }\n" +
                 "    /* Forms & Inputs */\n" +
                 "    .form-group { margin-bottom: 1.25rem; }\n" +
                 "    label { display: block; font-size: 0.85rem; font-weight: 600; color: var(--text-muted); margin-bottom: 6px; }\n" +
@@ -372,6 +372,36 @@ public class WebUI {
         t.sendResponseHeaders(302, -1);
     }
 
+    private static void redirectWithCookie(HttpExchange t, String location, String cookieVal) throws IOException {
+        t.getResponseHeaders().set("Set-Cookie", COOKIE_NAME + "=" + cookieVal + "; Path=/; HttpOnly");
+        t.getResponseHeaders().set("Location", location);
+        t.sendResponseHeaders(302, -1);
+    }
+
+    private static User getSessionUser(HttpExchange t) {
+        String cookieHeader = t.getRequestHeaders().getFirst("Cookie");
+        if (cookieHeader == null) return null;
+        for (String c : cookieHeader.split(";")) {
+            String[] pair = c.trim().split("=");
+            if (pair.length == 2 && COOKIE_NAME.equals(pair[0])) {
+                return AuthService.getUserBySessionToken(pair[1]);
+            }
+        }
+        return null;
+    }
+
+    private static String getSessionToken(HttpExchange t) {
+        String cookieHeader = t.getRequestHeaders().getFirst("Cookie");
+        if (cookieHeader == null) return null;
+        for (String c : cookieHeader.split(";")) {
+            String[] pair = c.trim().split("=");
+            if (pair.length == 2 && COOKIE_NAME.equals(pair[0])) {
+                return pair[1];
+            }
+        }
+        return null;
+    }
+
     // =========================================================================
     // 1. INDEX / LANDING PAGE
     // =========================================================================
@@ -383,7 +413,7 @@ public class WebUI {
                 return;
             }
 
-            User currentUser = AuthService.getCurrentUser();
+            User currentUser = getSessionUser(t);
             Map<String, Object> stats = LibraryService.getSystemStatistics();
 
             String html =
@@ -438,7 +468,7 @@ public class WebUI {
     static class LoginHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange t) throws IOException {
-            User currentUser = AuthService.getCurrentUser();
+            User currentUser = getSessionUser(t);
             if (currentUser != null) {
                 redirect(t, currentUser.isAdmin() ? "/admin" : "/user");
                 return;
@@ -494,7 +524,7 @@ public class WebUI {
     static class UserDashboardHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange t) throws IOException {
-            User currentUser = AuthService.getCurrentUser();
+            User currentUser = getSessionUser(t);
             if (currentUser == null) {
                 redirect(t, "/login?msg=" + encode("Please sign in to access your member dashboard."));
                 return;
@@ -630,7 +660,7 @@ public class WebUI {
     static class AdminDashboardHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange t) throws IOException {
-            User currentUser = AuthService.getCurrentUser();
+            User currentUser = getSessionUser(t);
             if (currentUser == null || !currentUser.isAdmin()) {
                 redirect(t, "/login?role=admin&error=" + encode("Admin credentials required to access this portal."));
                 return;
@@ -735,7 +765,7 @@ public class WebUI {
                 prRows.append("</div></td></tr>");
             }
             if (purchaseRequests.isEmpty()) {
-                prRows.append("<tr><td colspan='6' style='text-align:center; color: var(--text-muted);'>No purchase requests.</td></tr>");
+                trRows.append("<tr><td colspan='6' style='text-align:center; color: var(--text-muted);'>No purchase requests.</td></tr>");
             }
 
             StringBuilder branchOpts = new StringBuilder();
@@ -852,7 +882,7 @@ public class WebUI {
     static class BooksViewHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange t) throws IOException {
-            User currentUser = AuthService.getCurrentUser();
+            User currentUser = getSessionUser(t);
             List<Book> books = LibraryService.fetchAllBooks();
             StringBuilder rows = new StringBuilder();
             for (Book b : books) {
@@ -894,11 +924,12 @@ public class WebUI {
             String u = body.get("username");
             String p = body.get("password");
             try {
-                User user = AuthService.login(u, p);
+                String token = AuthService.createWebSession(u, p);
+                User user = AuthService.getUserBySessionToken(token);
                 if (user.isAdmin()) {
-                    redirect(t, "/admin?msg=" + encode("Welcome back, Administrator " + user.getFullName() + "!"));
+                    redirectWithCookie(t, "/admin?msg=" + encode("Welcome back, Administrator " + user.getFullName() + "!"), token);
                 } else {
-                    redirect(t, "/user?msg=" + encode("Welcome back, " + user.getFullName() + "!"));
+                    redirectWithCookie(t, "/user?msg=" + encode("Welcome back, " + user.getFullName() + "!"), token);
                 }
             } catch (Exception e) {
                 redirect(t, "/login?error=" + encode(e.getMessage()));
@@ -909,8 +940,11 @@ public class WebUI {
     static class LogoutActionHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange t) throws IOException {
-            AuthService.logout();
-            redirect(t, "/login?msg=" + encode("You have been signed out successfully."));
+            String token = getSessionToken(t);
+            if (token != null) {
+                AuthService.invalidateSession(token);
+            }
+            redirectWithCookie(t, "/login?msg=" + encode("You have been signed out successfully."), "deleted; Max-Age=0");
         }
     }
 
@@ -918,7 +952,7 @@ public class WebUI {
         @Override
         public void handle(HttpExchange t) throws IOException {
             if (!"POST".equalsIgnoreCase(t.getRequestMethod())) { redirect(t, "/admin"); return; }
-            User currentUser = AuthService.getCurrentUser();
+            User currentUser = getSessionUser(t);
             if (currentUser == null || !currentUser.isAdmin()) {
                 redirect(t, "/login?error=" + encode("Admin access required."));
                 return;
@@ -945,7 +979,7 @@ public class WebUI {
         @Override
         public void handle(HttpExchange t) throws IOException {
             if (!"POST".equalsIgnoreCase(t.getRequestMethod())) { redirect(t, "/admin"); return; }
-            User currentUser = AuthService.getCurrentUser();
+            User currentUser = getSessionUser(t);
             if (currentUser == null || !currentUser.isAdmin()) {
                 redirect(t, "/login?error=" + encode("Admin access required."));
                 return;
@@ -966,7 +1000,7 @@ public class WebUI {
         @Override
         public void handle(HttpExchange t) throws IOException {
             if (!"POST".equalsIgnoreCase(t.getRequestMethod())) { redirect(t, "/user"); return; }
-            User user = AuthService.getCurrentUser();
+            User user = getSessionUser(t);
             if (user == null) { redirect(t, "/login"); return; }
 
             Map<String, String> body = parseBody(t.getRequestBody());
@@ -985,7 +1019,7 @@ public class WebUI {
         @Override
         public void handle(HttpExchange t) throws IOException {
             if (!"POST".equalsIgnoreCase(t.getRequestMethod())) { redirect(t, "/user"); return; }
-            User user = AuthService.getCurrentUser();
+            User user = getSessionUser(t);
             if (user == null) { redirect(t, "/login"); return; }
 
             Map<String, String> body = parseBody(t.getRequestBody());
@@ -1004,7 +1038,7 @@ public class WebUI {
         @Override
         public void handle(HttpExchange t) throws IOException {
             if (!"POST".equalsIgnoreCase(t.getRequestMethod())) { redirect(t, "/user"); return; }
-            User user = AuthService.getCurrentUser();
+            User user = getSessionUser(t);
             if (user == null) { redirect(t, "/login"); return; }
 
             Map<String, String> body = parseBody(t.getRequestBody());
@@ -1024,7 +1058,7 @@ public class WebUI {
         @Override
         public void handle(HttpExchange t) throws IOException {
             if (!"POST".equalsIgnoreCase(t.getRequestMethod())) { redirect(t, "/user"); return; }
-            User user = AuthService.getCurrentUser();
+            User user = getSessionUser(t);
             if (user == null) { redirect(t, "/login"); return; }
 
             Map<String, String> body = parseBody(t.getRequestBody());
@@ -1043,7 +1077,7 @@ public class WebUI {
         @Override
         public void handle(HttpExchange t) throws IOException {
             if (!"POST".equalsIgnoreCase(t.getRequestMethod())) { redirect(t, "/admin"); return; }
-            User user = AuthService.getCurrentUser();
+            User user = getSessionUser(t);
             if (user == null || !user.isAdmin()) { redirect(t, "/login"); return; }
 
             Map<String, String> body = parseBody(t.getRequestBody());
@@ -1067,7 +1101,7 @@ public class WebUI {
         @Override
         public void handle(HttpExchange t) throws IOException {
             if (!"POST".equalsIgnoreCase(t.getRequestMethod())) { redirect(t, "/admin"); return; }
-            User user = AuthService.getCurrentUser();
+            User user = getSessionUser(t);
             if (user == null || !user.isAdmin()) { redirect(t, "/login"); return; }
 
             Map<String, String> body = parseBody(t.getRequestBody());
@@ -1085,7 +1119,7 @@ public class WebUI {
         @Override
         public void handle(HttpExchange t) throws IOException {
             if (!"POST".equalsIgnoreCase(t.getRequestMethod())) { redirect(t, "/admin"); return; }
-            User user = AuthService.getCurrentUser();
+            User user = getSessionUser(t);
             if (user == null || !user.isAdmin()) { redirect(t, "/login"); return; }
 
             Map<String, String> body = parseBody(t.getRequestBody());
@@ -1104,7 +1138,7 @@ public class WebUI {
         @Override
         public void handle(HttpExchange t) throws IOException {
             if (!"POST".equalsIgnoreCase(t.getRequestMethod())) { redirect(t, "/admin"); return; }
-            User user = AuthService.getCurrentUser();
+            User user = getSessionUser(t);
             if (user == null || !user.isAdmin()) { redirect(t, "/login"); return; }
 
             Map<String, String> body = parseBody(t.getRequestBody());
