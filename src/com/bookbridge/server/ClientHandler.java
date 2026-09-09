@@ -4,6 +4,7 @@ import com.bookbridge.model.Book;
 import com.bookbridge.model.Branch;
 import com.bookbridge.model.PurchaseRequest;
 import com.bookbridge.model.TransferRequest;
+import com.bookbridge.model.User;
 import com.bookbridge.network.NetworkMessage;
 
 import java.io.EOFException;
@@ -60,6 +61,33 @@ public class ClientHandler implements Runnable {
 
         try {
             switch (req.action) {
+                // --- AUTHENTICATION & USER MANAGEMENT ---
+                case "AUTHENTICATE_USER": {
+                    Object[] arr = (Object[]) req.payload;
+                    String username = (String) arr[0];
+                    String password = (String) arr[1];
+                    User user = DatabaseConnection.authenticate(username, password);
+                    return NetworkMessage.success(req.action, user);
+                }
+
+                case "CREATE_USER": {
+                    User user = (User) req.payload;
+                    DatabaseConnection.createUser(user);
+                    return NetworkMessage.success(req.action, "User created successfully!");
+                }
+
+                case "GET_ALL_USERS": {
+                    List<User> users = DatabaseConnection.getAllUsers();
+                    return NetworkMessage.success(req.action, users);
+                }
+
+                case "DELETE_USER": {
+                    int userId = (int) req.payload;
+                    DatabaseConnection.deleteUser(userId);
+                    return NetworkMessage.success(req.action, "User deleted successfully!");
+                }
+
+                // --- BOOK & CATALOG OPERATIONS ---
                 case "VIEW_ALL_BOOKS": {
                     List<Book> books = DatabaseConnection.getAllBooks();
                     return NetworkMessage.success(req.action, books);

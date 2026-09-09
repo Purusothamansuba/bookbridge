@@ -1,11 +1,13 @@
 package com.bookbridge.client.ui;
 
+import com.bookbridge.client.service.AuthService;
 import com.bookbridge.client.service.LibraryService;
 import com.bookbridge.client.service.RequestService;
 import com.bookbridge.model.Book;
 import com.bookbridge.model.Branch;
 import com.bookbridge.model.PurchaseRequest;
 import com.bookbridge.model.TransferRequest;
+import com.bookbridge.model.User;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
@@ -15,6 +17,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.URLDecoder;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 
@@ -27,11 +30,18 @@ public class WebUI {
 
         // Core Pages
         server.createContext("/", new IndexHandler());
+        server.createContext("/login", new LoginHandler());
         server.createContext("/user", new UserDashboardHandler());
         server.createContext("/admin", new AdminDashboardHandler());
         server.createContext("/books", new BooksViewHandler());
 
-        // Actions
+        // Authentication Actions
+        server.createContext("/action/login", new LoginActionHandler());
+        server.createContext("/action/logout", new LogoutActionHandler());
+        server.createContext("/action/createUser", new CreateUserActionHandler());
+        server.createContext("/action/deleteUser", new DeleteUserActionHandler());
+
+        // Library Actions
         server.createContext("/action/borrow", new BorrowActionHandler());
         server.createContext("/action/return", new ReturnActionHandler());
         server.createContext("/action/transfer", new TransferActionHandler());
@@ -47,11 +57,15 @@ public class WebUI {
         System.out.println("=================================================");
         System.out.println(" 🌐 BookBridge Premium Web UI Server Online! ");
         System.out.println(" 🔗 Access Web Portal: http://localhost:" + PORT);
+        System.out.println(" 🔑 Default Admin: admin / admin123");
+        System.out.println(" 🔑 Default User : purushothaman / user123");
         System.out.println("=================================================");
     }
 
-    // --- HTML TEMPLATE & CSS DESIGN SYSTEM ---
-    private static String renderPage(String title, String activeNav, String queryParams, String bodyContent) {
+    // =========================================================================
+    // 🎨 DESIGN SYSTEM & TEMPLATE WRAPPER (Separation of Concerns)
+    // =========================================================================
+    private static String renderPage(String title, String activeNav, String queryParams, User currentUser, String bodyContent) {
         Map<String, String> params = parseQuery(queryParams);
         String successMsg = params.get("msg");
         String errorMsg = params.get("error");
@@ -68,6 +82,18 @@ public class WebUI {
                      .append("<button class='toast-close' onclick='this.parentElement.remove()'>×</button></div>");
         }
 
+        StringBuilder userBadgeHtml = new StringBuilder();
+        if (currentUser != null) {
+            userBadgeHtml.append("<div class='nav-user-badge'>")
+                         .append("<span class='badge ").append(currentUser.isAdmin() ? "badge-red" : "badge-blue").append("'>")
+                         .append(currentUser.isAdmin() ? "🛡️ ADMIN" : "👤 " + escapeHtml(currentUser.getFullName()))
+                         .append("</span>")
+                         .append("<a href='/action/logout' class='btn btn-secondary btn-sm'>Logout</a>")
+                         .append("</div>");
+        } else {
+            userBadgeHtml.append("<a href='/login' class='btn btn-primary btn-sm'>Sign In 🔑</a>");
+        }
+
         return "<!DOCTYPE html>\n" +
                 "<html lang='en'>\n" +
                 "<head>\n" +
@@ -79,9 +105,9 @@ public class WebUI {
                 "  <link href='https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap' rel='stylesheet'>\n" +
                 "  <style>\n" +
                 "    :root {\n" +
-                "      --bg-dark: #090d16;\n" +
-                "      --bg-card: rgba(18, 24, 38, 0.75);\n" +
-                "      --bg-card-hover: rgba(28, 37, 58, 0.85);\n" +
+                "      --bg-dark: #080c16;\n" +
+                "      --bg-surface: rgba(17, 24, 39, 0.75);\n" +
+                "      --bg-surface-hover: rgba(30, 41, 59, 0.85);\n" +
                 "      --border-color: rgba(255, 255, 255, 0.08);\n" +
                 "      --border-focus: #6366f1;\n" +
                 "      --primary-gradient: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);\n" +
@@ -94,7 +120,6 @@ public class WebUI {
                 "      --radius-sm: 8px;\n" +
                 "      --radius-md: 14px;\n" +
                 "      --radius-lg: 20px;\n" +
-                "      --shadow-glow: 0 0 25px rgba(99, 102, 241, 0.25);\n" +
                 "    }\n" +
                 "    * { box-sizing: border-box; margin: 0; padding: 0; }\n" +
                 "    body {\n" +
@@ -109,9 +134,8 @@ public class WebUI {
                 "      display: flex;\n" +
                 "      flex-direction: column;\n" +
                 "    }\n" +
-                "    /* Header / Navbar */\n" +
                 "    .navbar {\n" +
-                "      background: rgba(9, 13, 22, 0.8);\n" +
+                "      background: rgba(8, 12, 22, 0.85);\n" +
                 "      backdrop-filter: blur(16px);\n" +
                 "      border-bottom: 1px solid var(--border-color);\n" +
                 "      padding: 1rem 2rem;\n" +
@@ -143,32 +167,20 @@ public class WebUI {
                 "      font-size: 1.2rem;\n" +
                 "      box-shadow: 0 4px 12px rgba(99, 102, 241, 0.35);\n" +
                 "    }\n" +
-                "    .nav-links {\n" +
-                "      display: flex;\n" +
-                "      gap: 8px;\n" +
-                "      align-items: center;\n" +
-                "    }\n" +
+                "    .nav-links { display: flex; gap: 8px; align-items: center; }\n" +
                 "    .nav-link {\n" +
                 "      color: var(--text-muted);\n" +
                 "      text-decoration: none;\n" +
-                "      padding: 8px 16px;\n" +
+                "      padding: 8px 14px;\n" +
                 "      border-radius: var(--radius-sm);\n" +
                 "      font-size: 0.9rem;\n" +
                 "      font-weight: 600;\n" +
-                "      transition: all 0.2s ease;\n" +
+                "      transition: all 0.2s;\n" +
                 "    }\n" +
-                "    .nav-link:hover, .nav-link.active {\n" +
-                "      color: white;\n" +
-                "      background: rgba(255, 255, 255, 0.08);\n" +
-                "    }\n" +
-                "    .container {\n" +
-                "      max-width: 1280px;\n" +
-                "      width: 100%;\n" +
-                "      margin: 0 auto;\n" +
-                "      padding: 2rem;\n" +
-                "      flex: 1;\n" +
-                "    }\n" +
-                "    /* Flash Toast Notifications */\n" +
+                "    .nav-link:hover, .nav-link.active { color: white; background: rgba(255, 255, 255, 0.08); }\n" +
+                "    .nav-user-badge { display: flex; align-items: center; gap: 10px; margin-left: 10px; }\n" +
+                "    .container { max-width: 1280px; width: 100%; margin: 0 auto; padding: 2rem; flex: 1; }\n" +
+                "    /* Toasts */\n" +
                 "    .toast-container { position: fixed; top: 80px; right: 24px; z-index: 999; display: flex; flex-direction: column; gap: 10px; }\n" +
                 "    .toast {\n" +
                 "      padding: 14px 20px;\n" +
@@ -186,35 +198,31 @@ public class WebUI {
                 "    .toast-success { background: rgba(16, 185, 129, 0.2); border: 1px solid var(--accent-emerald); color: #a7f3d0; }\n" +
                 "    .toast-error { background: rgba(244, 63, 94, 0.2); border: 1px solid var(--accent-rose); color: #fecdd3; }\n" +
                 "    .toast-close { background: none; border: none; color: inherit; font-size: 1.2rem; cursor: pointer; margin-left: 8px; }\n" +
-                "    /* Cards & Components */\n" +
+                "    /* Cards & Panels */\n" +
                 "    .card {\n" +
-                "      background: var(--bg-card);\n" +
+                "      background: var(--bg-surface);\n" +
                 "      border: 1px solid var(--border-color);\n" +
                 "      border-radius: var(--radius-lg);\n" +
                 "      padding: 1.75rem;\n" +
                 "      backdrop-filter: blur(12px);\n" +
-                "      box-shadow: 0 8px 32px rgba(0,0,0,0.2);\n" +
+                "      box-shadow: 0 8px 32px rgba(0,0,0,0.25);\n" +
                 "    }\n" +
                 "    .stats-grid {\n" +
                 "      display: grid;\n" +
-                "      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));\n" +
+                "      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));\n" +
                 "      gap: 1.25rem;\n" +
                 "      margin-bottom: 2rem;\n" +
                 "    }\n" +
                 "    .stat-card {\n" +
-                "      background: var(--bg-card);\n" +
+                "      background: var(--bg-surface);\n" +
                 "      border: 1px solid var(--border-color);\n" +
                 "      border-radius: var(--radius-md);\n" +
                 "      padding: 1.25rem 1.5rem;\n" +
                 "      display: flex;\n" +
                 "      align-items: center;\n" +
                 "      gap: 16px;\n" +
-                "      transition: transform 0.2s ease, border-color 0.2s ease;\n" +
                 "    }\n" +
-                "    .stat-card:hover { transform: translateY(-2px); border-color: rgba(99, 102, 241, 0.4); }\n" +
-                "    .stat-icon {\n" +
-                "      width: 48px; height: 48px; border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center; font-size: 1.5rem;\n" +
-                "    }\n" +
+                "    .stat-icon { width: 44px; height: 44px; border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center; font-size: 1.4rem; }\n" +
                 "    .stat-val { font-size: 1.75rem; font-weight: 800; color: white; line-height: 1.1; }\n" +
                 "    .stat-label { font-size: 0.85rem; color: var(--text-muted); font-weight: 500; }\n" +
                 "    /* Buttons */\n" +
@@ -230,10 +238,10 @@ public class WebUI {
                 "      cursor: pointer;\n" +
                 "      border: none;\n" +
                 "      text-decoration: none;\n" +
-                "      transition: all 0.2s ease;\n" +
+                "      transition: all 0.2s;\n" +
                 "    }\n" +
                 "    .btn-primary { background: var(--primary-gradient); color: white; box-shadow: 0 4px 14px rgba(99, 102, 241, 0.4); }\n" +
-                "    .btn-primary:hover { opacity: 0.95; transform: translateY(-1px); box-shadow: 0 6px 20px rgba(99, 102, 241, 0.5); }\n" +
+                "    .btn-primary:hover { opacity: 0.95; transform: translateY(-1px); }\n" +
                 "    .btn-success { background: var(--accent-emerald); color: #022c22; font-weight: 700; }\n" +
                 "    .btn-success:hover { background: #34d399; }\n" +
                 "    .btn-warning { background: var(--accent-amber); color: #451a03; font-weight: 700; }\n" +
@@ -250,25 +258,18 @@ public class WebUI {
                 "    td { padding: 14px 18px; border-bottom: 1px solid var(--border-color); color: #e2e8f0; }\n" +
                 "    tr:hover td { background: rgba(255, 255, 255, 0.02); }\n" +
                 "    /* Badges */\n" +
-                "    .badge {\n" +
-                "      display: inline-flex;\n" +
-                "      align-items: center;\n" +
-                "      padding: 4px 10px;\n" +
-                "      border-radius: 999px;\n" +
-                "      font-size: 0.75rem;\n" +
-                "      font-weight: 700;\n" +
-                "      letter-spacing: 0.3px;\n" +
-                "    }\n" +
+                "    .badge { display: inline-flex; align-items: center; padding: 4px 10px; border-radius: 999px; font-size: 0.75rem; font-weight: 700; }\n" +
                 "    .badge-green { background: rgba(16, 185, 129, 0.15); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.3); }\n" +
                 "    .badge-red { background: rgba(244, 63, 94, 0.15); color: #fda4af; border: 1px solid rgba(244, 63, 94, 0.3); }\n" +
                 "    .badge-blue { background: rgba(99, 102, 241, 0.15); color: #a5b4fc; border: 1px solid rgba(99, 102, 241, 0.3); }\n" +
                 "    .badge-amber { background: rgba(245, 158, 11, 0.15); color: #fde68a; border: 1px solid rgba(245, 158, 11, 0.3); }\n" +
+                "    .badge-purple { background: rgba(168, 85, 247, 0.15); color: #d8b4fe; border: 1px solid rgba(168, 85, 247, 0.3); }\n" +
                 "    /* Forms & Inputs */\n" +
                 "    .form-group { margin-bottom: 1.25rem; }\n" +
                 "    label { display: block; font-size: 0.85rem; font-weight: 600; color: var(--text-muted); margin-bottom: 6px; }\n" +
                 "    input, select, textarea {\n" +
                 "      width: 100%;\n" +
-                "      background: rgba(15, 23, 42, 0.8);\n" +
+                "      background: rgba(15, 23, 42, 0.85);\n" +
                 "      border: 1px solid var(--border-color);\n" +
                 "      color: white;\n" +
                 "      padding: 10px 14px;\n" +
@@ -282,12 +283,20 @@ public class WebUI {
                 "      border-color: var(--border-focus);\n" +
                 "      box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);\n" +
                 "    }\n" +
+                "    /* Tabs */\n" +
+                "    .tabs { display: flex; gap: 8px; border-bottom: 1px solid var(--border-color); margin-bottom: 1.5rem; }\n" +
+                "    .tab-btn {\n" +
+                "      background: none; border: none; padding: 12px 18px; color: var(--text-muted); font-size: 0.95rem; font-weight: 600; cursor: pointer; border-bottom: 2px solid transparent;\n" +
+                "    }\n" +
+                "    .tab-btn.active { color: white; border-bottom-color: #6366f1; background: rgba(99, 102, 241, 0.08); border-radius: var(--radius-sm) var(--radius-sm) 0 0; }\n" +
+                "    .tab-content { display: none; }\n" +
+                "    .tab-content.active { display: block; }\n" +
                 "    /* Modals */\n" +
                 "    .modal-overlay {\n" +
                 "      display: none;\n" +
                 "      position: fixed;\n" +
                 "      top: 0; left: 0; right: 0; bottom: 0;\n" +
-                "      background: rgba(0, 0, 0, 0.75);\n" +
+                "      background: rgba(0, 0, 0, 0.8);\n" +
                 "      backdrop-filter: blur(8px);\n" +
                 "      z-index: 500;\n" +
                 "      align-items: center;\n" +
@@ -299,12 +308,10 @@ public class WebUI {
                 "      border: 1px solid var(--border-color);\n" +
                 "      border-radius: var(--radius-lg);\n" +
                 "      width: 100%;\n" +
-                "      max-width: 500px;\n" +
+                "      max-width: 520px;\n" +
                 "      padding: 2rem;\n" +
                 "      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6);\n" +
-                "      animation: modalPop 0.2s ease-out;\n" +
                 "    }\n" +
-                "    @keyframes modalPop { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }\n" +
                 "    .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }\n" +
                 "    .modal-title { font-size: 1.25rem; font-weight: 700; color: white; }\n" +
                 "    .modal-close { background: none; border: none; font-size: 1.5rem; color: var(--text-muted); cursor: pointer; }\n" +
@@ -319,9 +326,10 @@ public class WebUI {
                 "    </a>\n" +
                 "    <div class='nav-links'>\n" +
                 "      <a href='/' class='nav-link " + (activeNav.equals("home") ? "active" : "") + "'>Home</a>\n" +
-                "      <a href='/user' class='nav-link " + (activeNav.equals("user") ? "active" : "") + "'>User Portal</a>\n" +
+                "      <a href='/user' class='nav-link " + (activeNav.equals("user") ? "active" : "") + "'>Member Dashboard</a>\n" +
                 "      <a href='/admin' class='nav-link " + (activeNav.equals("admin") ? "active" : "") + "'>Admin Portal</a>\n" +
                 "      <a href='/books' class='nav-link " + (activeNav.equals("books") ? "active" : "") + "'>All Books</a>\n" +
+                "      " + userBadgeHtml + "\n" +
                 "    </div>\n" +
                 "  </nav>\n" +
                 "  <div class='toast-container'>" + flashHtml + "</div>\n" +
@@ -334,6 +342,12 @@ public class WebUI {
                 "  <script>\n" +
                 "    function openModal(id) { document.getElementById(id).classList.add('active'); }\n" +
                 "    function closeModal(id) { document.getElementById(id).classList.remove('active'); }\n" +
+                "    function switchTab(tabId) {\n" +
+                "      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));\n" +
+                "      document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));\n" +
+                "      event.target.classList.add('active');\n" +
+                "      document.getElementById(tabId).classList.add('active');\n" +
+                "    }\n" +
                 "    window.onclick = function(event) {\n" +
                 "      if (event.target.classList.contains('modal-overlay')) {\n" +
                 "        event.target.classList.remove('active');\n" +
@@ -358,7 +372,9 @@ public class WebUI {
         t.sendResponseHeaders(302, -1);
     }
 
-    // --- 1. INDEX / LANDING HANDLER ---
+    // =========================================================================
+    // 1. INDEX / LANDING PAGE
+    // =========================================================================
     static class IndexHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange t) throws IOException {
@@ -367,19 +383,13 @@ public class WebUI {
                 return;
             }
 
+            User currentUser = AuthService.getCurrentUser();
             Map<String, Object> stats = LibraryService.getSystemStatistics();
-            List<Branch> branches = LibraryService.getBranches();
-
-            StringBuilder branchOptions = new StringBuilder();
-            for (Branch b : branches) {
-                branchOptions.append("<option value='").append(b.getBranchId()).append("'>")
-                             .append(escapeHtml(b.getBranchName())).append(" (").append(escapeHtml(b.getLocation())).append(")</option>");
-            }
 
             String html =
-                "<div style='text-align: center; max-width: 720px; margin: 2rem auto 3rem;'>\n" +
+                "<div style='text-align: center; max-width: 760px; margin: 2rem auto 3rem;'>\n" +
                 "  <h1 style='font-size: 3rem; font-weight: 800; letter-spacing: -1px; margin-bottom: 1rem; background: var(--primary-gradient); -webkit-background-clip: text; -webkit-text-fill-color: transparent;'>Bridging Libraries, Connecting Readers.</h1>\n" +
-                "  <p style='color: var(--text-muted); font-size: 1.15rem;'>Browse interconnected branch catalogs, borrow books instantly, and request seamless inter-branch transfers.</p>\n" +
+                "  <p style='color: var(--text-muted); font-size: 1.15rem;'>Explore cross-branch library inventories, borrow titles instantaneously, request inter-branch transfers, or suggest new acquisitions.</p>\n" +
                 "</div>\n" +
                 "<div class='stats-grid'>\n" +
                 "  <div class='stat-card'>\n" +
@@ -392,7 +402,11 @@ public class WebUI {
                 "  </div>\n" +
                 "  <div class='stat-card'>\n" +
                 "    <div class='stat-icon' style='background: rgba(6, 182, 212, 0.15); color: #22d3ee;'>🏛️</div>\n" +
-                "    <div><div class='stat-val'>" + stats.getOrDefault("totalBranches", 0) + "</div><div class='stat-label'>Active Branches</div></div>\n" +
+                "    <div><div class='stat-val'>" + stats.getOrDefault("totalBranches", 0) + "</div><div class='stat-label'>Connected Branches</div></div>\n" +
+                "  </div>\n" +
+                "  <div class='stat-card'>\n" +
+                "    <div class='stat-icon' style='background: rgba(168, 85, 247, 0.15); color: #c084fc;'>👥</div>\n" +
+                "    <div><div class='stat-val'>" + stats.getOrDefault("totalUsers", 0) + "</div><div class='stat-label'>Registered Users</div></div>\n" +
                 "  </div>\n" +
                 "  <div class='stat-card'>\n" +
                 "    <div class='stat-icon' style='background: rgba(245, 158, 11, 0.15); color: #fbbf24;'>🔄</div>\n" +
@@ -403,49 +417,95 @@ public class WebUI {
                 "  <div class='card'>\n" +
                 "    <div style='font-size: 2rem; margin-bottom: 1rem;'>👤</div>\n" +
                 "    <h2 style='font-size: 1.5rem; margin-bottom: 0.5rem;'>Member Portal</h2>\n" +
-                "    <p style='color: var(--text-muted); margin-bottom: 1.5rem; font-size: 0.95rem;'>Borrow and return books, request inter-branch transfers, or suggest new acquisitions.</p>\n" +
-                "    <form action='/user' method='GET'>\n" +
-                "      <div class='form-group'>\n" +
-                "        <label>Your Name</label>\n" +
-                "        <input type='text' name='name' placeholder='e.g. Purushothaman' required value='Purushothaman'>\n" +
-                "      </div>\n" +
-                "      <div class='form-group'>\n" +
-                "        <label>Select Home Branch</label>\n" +
-                "        <select name='branch'>" + branchOptions + "</select>\n" +
-                "      </div>\n" +
-                "      <button type='submit' class='btn btn-primary' style='width: 100%; padding: 12px;'>Enter Member Portal →</button>\n" +
-                "    </form>\n" +
+                "    <p style='color: var(--text-muted); margin-bottom: 1.5rem; font-size: 0.95rem;'>Log in as a library patron to borrow books, check availability across branches, and request transfers.</p>\n" +
+                "    <a href='/login?role=member' class='btn btn-primary' style='width: 100%; padding: 12px;'>Member Sign In →</a>\n" +
                 "  </div>\n" +
                 "  <div class='card'>\n" +
                 "    <div style='font-size: 2rem; margin-bottom: 1rem;'>🛡️</div>\n" +
                 "    <h2 style='font-size: 1.5rem; margin-bottom: 0.5rem;'>Librarian & Admin Portal</h2>\n" +
-                "    <p style='color: var(--text-muted); margin-bottom: 1.5rem; font-size: 0.95rem;'>Manage book catalog inventory, approve inter-branch transfers, and review purchase requests.</p>\n" +
-                "    <div style='margin-top: 2.5rem;'>\n" +
-                "      <a href='/admin' class='btn btn-secondary' style='width: 100%; padding: 12px;'>Open Admin Dashboard ⚙️</a>\n" +
-                "      <a href='/books' class='btn btn-secondary' style='width: 100%; padding: 12px; margin-top: 10px;'>Browse Public Catalog 📖</a>\n" +
-                "    </div>\n" +
+                "    <p style='color: var(--text-muted); margin-bottom: 1.5rem; font-size: 0.95rem;'>Manage library catalog, create and manage user accounts, approve transfers, and review purchases.</p>\n" +
+                "    <a href='/login?role=admin' class='btn btn-secondary' style='width: 100%; padding: 12px;'>Admin Console ⚙️</a>\n" +
                 "  </div>\n" +
                 "</div>";
 
-            sendHtml(t, renderPage("Home", "home", t.getRequestURI().getQuery(), html));
+            sendHtml(t, renderPage("Home", "home", t.getRequestURI().getQuery(), currentUser, html));
         }
     }
 
-    // --- 2. USER DASHBOARD HANDLER ---
+    // =========================================================================
+    // 2. LOGIN PAGE & AUTHENTICATION VIEW
+    // =========================================================================
+    static class LoginHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange t) throws IOException {
+            User currentUser = AuthService.getCurrentUser();
+            if (currentUser != null) {
+                redirect(t, currentUser.isAdmin() ? "/admin" : "/user");
+                return;
+            }
+
+            Map<String, String> query = parseQuery(t.getRequestURI().getQuery());
+            String prefillRole = query.getOrDefault("role", "member");
+            boolean isAdmin = "admin".equalsIgnoreCase(prefillRole);
+
+            String html =
+                "<div style='max-width: 460px; margin: 3rem auto;'>\n" +
+                "  <div class='card'>\n" +
+                "    <div style='text-align: center; margin-bottom: 2rem;'>\n" +
+                "      <div class='nav-brand-icon' style='margin: 0 auto 1rem; width: 48px; height: 48px; font-size: 1.5rem;'>🔑</div>\n" +
+                "      <h1 style='font-size: 1.75rem; font-weight: 800;'>Sign In to BookBridge</h1>\n" +
+                "      <p style='color: var(--text-muted); font-size: 0.9rem; margin-top: 4px;'>Select your portal and enter your credentials</p>\n" +
+                "    </div>\n" +
+                "    <form action='/action/login' method='POST'>\n" +
+                "      <div class='form-group'>\n" +
+                "        <label>Username</label>\n" +
+                "        <input type='text' name='username' id='loginUser' placeholder='Enter username' required value='" + (isAdmin ? "admin" : "purushothaman") + "'>\n" +
+                "      </div>\n" +
+                "      <div class='form-group'>\n" +
+                "        <label>Password</label>\n" +
+                "        <input type='password' name='password' id='loginPass' placeholder='Enter password' required value='" + (isAdmin ? "admin123" : "user123") + "'>\n" +
+                "      </div>\n" +
+                "      <button type='submit' class='btn btn-primary' style='width: 100%; padding: 12px; margin-top: 10px;'>Sign In →</button>\n" +
+                "    </form>\n" +
+                "    <div style='margin-top: 2rem; padding-top: 1.5rem; border-top: 1px solid var(--border-color);'>\n" +
+                "      <p style='font-size: 0.8rem; color: var(--text-muted); font-weight: 600; margin-bottom: 8px;'>QUICK LOGIN PRESETS:</p>\n" +
+                "      <div style='display: flex; gap: 8px; flex-wrap: wrap;'>\n" +
+                "        <button type='button' onclick=\"fillCredentials('admin', 'admin123')\" class='btn btn-secondary btn-sm'>🛡️ Admin (admin)</button>\n" +
+                "        <button type='button' onclick=\"fillCredentials('purushothaman', 'user123')\" class='btn btn-secondary btn-sm'>👤 Member (purushothaman)</button>\n" +
+                "        <button type='button' onclick=\"fillCredentials('alice', 'user123')\" class='btn btn-secondary btn-sm'>👤 Member (alice)</button>\n" +
+                "      </div>\n" +
+                "    </div>\n" +
+                "  </div>\n" +
+                "</div>\n" +
+                "<script>\n" +
+                "  function fillCredentials(u, p) {\n" +
+                "    document.getElementById('loginUser').value = u;\n" +
+                "    document.getElementById('loginPass').value = p;\n" +
+                "  }\n" +
+                "</script>";
+
+            sendHtml(t, renderPage("Sign In", "login", t.getRequestURI().getQuery(), null, html));
+        }
+    }
+
+    // =========================================================================
+    // 3. USER DASHBOARD VIEW
+    // =========================================================================
     static class UserDashboardHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange t) throws IOException {
-            Map<String, String> query = parseQuery(t.getRequestURI().getQuery());
-            String userName = query.getOrDefault("name", "Reader");
-            int branchId = 1;
-            try {
-                if (query.containsKey("branch")) branchId = Integer.parseInt(query.get("branch"));
-            } catch (Exception ignored) {}
+            User currentUser = AuthService.getCurrentUser();
+            if (currentUser == null) {
+                redirect(t, "/login?msg=" + encode("Please sign in to access your member dashboard."));
+                return;
+            }
 
+            Map<String, String> query = parseQuery(t.getRequestURI().getQuery());
             String searchQuery = query.getOrDefault("q", "");
+            int branchId = currentUser.getBranchId();
             String branchName = LibraryService.getBranchName(branchId);
+
             List<Book> books = searchQuery.isEmpty() ? LibraryService.fetchAllBooks() : LibraryService.searchBooks(searchQuery, null);
-            List<Branch> branches = LibraryService.getBranches();
 
             StringBuilder tableRows = new StringBuilder();
             for (Book b : books) {
@@ -465,7 +525,6 @@ public class WebUI {
                         tableRows.append("<form action='/action/borrow' method='POST' style='display:inline;'>")
                                  .append("<input type='hidden' name='bookId' value='").append(b.getBookId()).append("'>")
                                  .append("<input type='hidden' name='branch' value='").append(branchId).append("'>")
-                                 .append("<input type='hidden' name='name' value='").append(escapeHtml(userName)).append("'>")
                                  .append("<button type='submit' class='btn btn-success btn-sm'>Borrow</button></form>");
                     } else {
                         tableRows.append("<button class='btn btn-secondary btn-sm' disabled>Out of Stock</button>");
@@ -478,28 +537,25 @@ public class WebUI {
             }
 
             if (books.isEmpty()) {
-                tableRows.append("<tr><td colspan='6' style='text-align: center; padding: 2rem; color: var(--text-muted);'>No books matched your search. <button onclick=\"openModal('modalPurchase')\" class='btn btn-primary btn-sm' style='margin-left: 10px;'>Request to Purchase</button></td></tr>");
+                tableRows.append("<tr><td colspan='6' style='text-align: center; padding: 2rem; color: var(--text-muted);'>No books matched your search. <button onclick=\"openModal('modalPurchase')\" class='btn btn-primary btn-sm' style='margin-left: 10px;'>Request Purchase</button></td></tr>");
             }
 
             String html =
                 "<div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; flex-wrap: wrap; gap: 1rem;'>\n" +
                 "  <div>\n" +
-                "    <h1 style='font-size: 1.85rem; font-weight: 800;'>👋 Welcome, " + escapeHtml(userName) + "</h1>\n" +
-                "    <p style='color: var(--text-muted);'>Current Active Branch: <span class='badge badge-blue' style='font-size: 0.85rem;'>" + escapeHtml(branchName) + "</span></p>\n" +
+                "    <h1 style='font-size: 1.85rem; font-weight: 800;'>👋 Welcome, " + escapeHtml(currentUser.getFullName()) + "</h1>\n" +
+                "    <p style='color: var(--text-muted);'>Home Branch: <span class='badge badge-blue' style='font-size: 0.85rem;'>" + escapeHtml(branchName) + "</span> | Username: <span style='color: white; font-weight: 600;'>@" + escapeHtml(currentUser.getUsername()) + "</span></p>\n" +
                 "  </div>\n" +
                 "  <div style='display: flex; gap: 10px;'>\n" +
                 "    <button onclick=\"openModal('modalReturn')\" class='btn btn-secondary'>🔄 Return a Book</button>\n" +
                 "    <button onclick=\"openModal('modalPurchase')\" class='btn btn-primary'>✨ Suggest Purchase</button>\n" +
-                "    <a href='/' class='btn btn-secondary'>Logout</a>\n" +
                 "  </div>\n" +
                 "</div>\n" +
                 "<div class='card' style='margin-bottom: 2rem;'>\n" +
                 "  <form action='/user' method='GET' style='display: flex; gap: 12px; flex-wrap: wrap;'>\n" +
-                "    <input type='hidden' name='name' value='" + escapeHtml(userName) + "'>\n" +
-                "    <input type='hidden' name='branch' value='" + branchId + "'>\n" +
                 "    <input type='text' name='q' placeholder='Search by title, author, category, or Book ID...' value='" + escapeHtml(searchQuery) + "' style='flex: 1; min-width: 260px;'>\n" +
                 "    <button type='submit' class='btn btn-primary'>🔍 Search</button>\n" +
-                (searchQuery.isEmpty() ? "" : "    <a href='/user?name=" + escapeHtml(userName) + "&branch=" + branchId + "' class='btn btn-secondary'>Clear</a>\n") +
+                (searchQuery.isEmpty() ? "" : "    <a href='/user' class='btn btn-secondary'>Clear</a>\n") +
                 "  </form>\n" +
                 "</div>\n" +
                 "<div class='card'>\n" +
@@ -521,11 +577,9 @@ public class WebUI {
                 "      <button class='modal-close' onclick=\"closeModal('modalTransfer')\">×</button>\n" +
                 "    </div>\n" +
                 "    <form action='/action/transfer' method='POST'>\n" +
-                "      <input type='hidden' name='userName' value='" + escapeHtml(userName) + "'>\n" +
-                "      <input type='hidden' name='userBranch' value='" + branchId + "'>\n" +
                 "      <div class='form-group'><label>Book Name</label><input type='text' id='tfBookName' name='bookName' required readonly></div>\n" +
                 "      <div class='form-group'><label>From Branch</label><input type='text' id='tfFromBranch' name='fromBranch' required readonly></div>\n" +
-                "      <div class='form-group'><label>Deliver To Branch</label><input type='text' name='toBranch' value='" + escapeHtml(branchName) + "' required readonly></div>\n" +
+                "      <div class='form-group'><label>Deliver To My Branch</label><input type='text' name='toBranch' value='" + escapeHtml(branchName) + "' required readonly></div>\n" +
                 "      <button type='submit' class='btn btn-primary' style='width: 100%;'>Submit Transfer Request</button>\n" +
                 "    </form>\n" +
                 "  </div>\n" +
@@ -538,8 +592,6 @@ public class WebUI {
                 "      <button class='modal-close' onclick=\"closeModal('modalReturn')\">×</button>\n" +
                 "    </div>\n" +
                 "    <form action='/action/return' method='POST'>\n" +
-                "      <input type='hidden' name='userName' value='" + escapeHtml(userName) + "'>\n" +
-                "      <input type='hidden' name='branch' value='" + branchId + "'>\n" +
                 "      <div class='form-group'><label>Book ID</label><input type='number' name='bookId' placeholder='e.g. 101' required></div>\n" +
                 "      <p style='color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1rem;'>Returning to: <strong>" + escapeHtml(branchName) + "</strong></p>\n" +
                 "      <button type='submit' class='btn btn-success' style='width: 100%;'>Confirm Return</button>\n" +
@@ -554,8 +606,6 @@ public class WebUI {
                 "      <button class='modal-close' onclick=\"closeModal('modalPurchase')\">×</button>\n" +
                 "    </div>\n" +
                 "    <form action='/action/purchase' method='POST'>\n" +
-                "      <input type='hidden' name='userName' value='" + escapeHtml(userName) + "'>\n" +
-                "      <input type='hidden' name='branch' value='" + branchId + "'>\n" +
                 "      <div class='form-group'><label>Book Title</label><input type='text' name='bookName' placeholder='e.g. Systems Performance' required></div>\n" +
                 "      <div class='form-group'><label>Author</label><input type='text' name='author' placeholder='e.g. Brendan Gregg' required></div>\n" +
                 "      <button type='submit' class='btn btn-primary' style='width: 100%;'>Submit Purchase Request</button>\n" +
@@ -570,16 +620,25 @@ public class WebUI {
                 "  }\n" +
                 "</script>";
 
-            sendHtml(t, renderPage("Member Dashboard", "user", t.getRequestURI().getQuery(), html));
+            sendHtml(t, renderPage("Member Dashboard", "user", t.getRequestURI().getQuery(), currentUser, html));
         }
     }
 
-    // --- 3. ADMIN DASHBOARD HANDLER ---
+    // =========================================================================
+    // 4. ADMIN DASHBOARD & USER MANAGEMENT (Multi-Tab)
+    // =========================================================================
     static class AdminDashboardHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange t) throws IOException {
+            User currentUser = AuthService.getCurrentUser();
+            if (currentUser == null || !currentUser.isAdmin()) {
+                redirect(t, "/login?role=admin&error=" + encode("Admin credentials required to access this portal."));
+                return;
+            }
+
             List<Book> books = LibraryService.fetchAllBooks();
             List<Branch> branches = LibraryService.getBranches();
+            List<User> users = AuthService.fetchAllUsers();
             List<TransferRequest> transferRequests = RequestService.fetchTransferRequests();
             List<PurchaseRequest> purchaseRequests = RequestService.fetchPurchaseRequests();
 
@@ -590,6 +649,7 @@ public class WebUI {
                         .append("<td>#").append(b.getBookId()).append("</td>")
                         .append("<td><strong>").append(escapeHtml(b.getTitle())).append("</strong></td>")
                         .append("<td>").append(escapeHtml(b.getAuthor())).append("</td>")
+                        .append("<td>").append(escapeHtml(b.getCategory())).append("</td>")
                         .append("<td>").append(escapeHtml(b.getBranchName() != null ? b.getBranchName() : "Branch " + b.getBranchId())).append("</td>")
                         .append("<td><span class='badge badge-blue'>").append(b.getAvailableCopies()).append(" Copies</span></td>")
                         .append("<td><form action='/action/deleteBook' method='POST' onsubmit=\"return confirm('Delete this book?')\">")
@@ -598,7 +658,29 @@ public class WebUI {
                         .append("</tr>");
             }
 
-            // Transfer request rows
+            // User rows
+            StringBuilder userRows = new StringBuilder();
+            for (User u : users) {
+                userRows.append("<tr>")
+                        .append("<td>#").append(u.getUserId()).append("</td>")
+                        .append("<td><strong>@").append(escapeHtml(u.getUsername())).append("</strong></td>")
+                        .append("<td>").append(escapeHtml(u.getFullName())).append("</td>")
+                        .append("<td><span class='badge ").append(u.isAdmin() ? "badge-red" : "badge-blue").append("'>").append(u.getRole()).append("</span></td>")
+                        .append("<td>").append(escapeHtml(u.getBranchName() != null ? u.getBranchName() : "Branch " + u.getBranchId())).append("</td>")
+                        .append("<td>").append(escapeHtml(u.getCreatedAt())).append("</td>")
+                        .append("<td>");
+                if (u.getUserId() != 1 && u.getUserId() != currentUser.getUserId()) {
+                    userRows.append("<form action='/action/deleteUser' method='POST' onsubmit=\"return confirm('Delete user @")
+                            .append(escapeHtml(u.getUsername())).append("?')\">")
+                            .append("<input type='hidden' name='userId' value='").append(u.getUserId()).append("'>")
+                            .append("<button type='submit' class='btn btn-danger btn-sm'>Delete</button></form>");
+                } else {
+                    userRows.append("<span style='color: var(--text-muted); font-size: 0.8rem;'>Protected</span>");
+                }
+                userRows.append("</td></tr>");
+            }
+
+            // Transfer rows
             StringBuilder trRows = new StringBuilder();
             for (TransferRequest tr : transferRequests) {
                 trRows.append("<tr>")
@@ -627,7 +709,7 @@ public class WebUI {
                 trRows.append("<tr><td colspan='6' style='text-align:center; color: var(--text-muted);'>No transfer requests.</td></tr>");
             }
 
-            // Purchase request rows
+            // Purchase rows
             StringBuilder prRows = new StringBuilder();
             for (PurchaseRequest pr : purchaseRequests) {
                 prRows.append("<tr>")
@@ -663,37 +745,82 @@ public class WebUI {
             }
 
             String html =
-                "<div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem;'>\n" +
+                "<div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 2rem; flex-wrap: wrap; gap: 1rem;'>\n" +
                 "  <div>\n" +
                 "    <h1 style='font-size: 1.85rem; font-weight: 800;'>🛡️ Librarian & Admin Console</h1>\n" +
-                "    <p style='color: var(--text-muted);'>Complete Inventory Control, Branch Transfers & Acquisitions Management</p>\n" +
+                "    <p style='color: var(--text-muted);'>Full Inventory Control, User Administration, Branch Transfers & Acquisitions</p>\n" +
                 "  </div>\n" +
-                "  <button onclick=\"openModal('modalAddBook')\" class='btn btn-primary'>+ Add New Book</button>\n" +
+                "  <div style='display: flex; gap: 10px;'>\n" +
+                "    <button onclick=\"openModal('modalAddUser')\" class='btn btn-primary'>+ Create User</button>\n" +
+                "    <button onclick=\"openModal('modalAddBook')\" class='btn btn-secondary'>+ Add Book</button>\n" +
+                "  </div>\n" +
                 "</div>\n" +
-                "<div style='display: grid; grid-template-columns: 1fr; gap: 2rem;'>\n" +
-                "  <!-- Catalog Management -->\n" +
+                "<div class='tabs'>\n" +
+                "  <button class='tab-btn active' onclick=\"switchTab('tabBooks')\">📚 Catalog Inventory (" + books.size() + ")</button>\n" +
+                "  <button class='tab-btn' onclick=\"switchTab('tabUsers')\">👥 User Management (" + users.size() + ")</button>\n" +
+                "  <button class='tab-btn' onclick=\"switchTab('tabTransfers')\">🔄 Transfer Requests (" + transferRequests.size() + ")</button>\n" +
+                "  <button class='tab-btn' onclick=\"switchTab('tabPurchases')\">✨ Purchase Requests (" + purchaseRequests.size() + ")</button>\n" +
+                "</div>\n" +
+                "<!-- TAB 1: BOOKS -->\n" +
+                "<div id='tabBooks' class='tab-content active'>\n" +
                 "  <div class='card'>\n" +
-                "    <h2 style='font-size: 1.25rem; font-weight: 700; margin-bottom: 1rem;'>📚 Library Catalog Inventory (" + books.size() + " Titles)</h2>\n" +
                 "    <div class='table-container'>\n" +
-                "      <table><thead><tr><th>ID</th><th>Title</th><th>Author</th><th>Branch</th><th>Copies</th><th>Manage</th></tr></thead>\n" +
+                "      <table><thead><tr><th>ID</th><th>Title</th><th>Author</th><th>Category</th><th>Branch</th><th>Copies</th><th>Manage</th></tr></thead>\n" +
                 "      <tbody>" + bookRows + "</tbody></table>\n" +
                 "    </div>\n" +
                 "  </div>\n" +
-                "  <!-- Inter-Branch Transfers -->\n" +
+                "</div>\n" +
+                "<!-- TAB 2: USERS -->\n" +
+                "<div id='tabUsers' class='tab-content'>\n" +
                 "  <div class='card'>\n" +
-                "    <h2 style='font-size: 1.25rem; font-weight: 700; margin-bottom: 1rem;'>🔄 Inter-Branch Transfer Requests</h2>\n" +
+                "    <div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;'>\n" +
+                "      <h2 style='font-size: 1.25rem; font-weight: 700;'>👥 Registered Users & Librarians</h2>\n" +
+                "      <button onclick=\"openModal('modalAddUser')\" class='btn btn-primary btn-sm'>+ Create New User</button>\n" +
+                "    </div>\n" +
+                "    <div class='table-container'>\n" +
+                "      <table><thead><tr><th>ID</th><th>Username</th><th>Full Name</th><th>Role</th><th>Assigned Branch</th><th>Joined</th><th>Action</th></tr></thead>\n" +
+                "      <tbody>" + userRows + "</tbody></table>\n" +
+                "    </div>\n" +
+                "  </div>\n" +
+                "</div>\n" +
+                "<!-- TAB 3: TRANSFERS -->\n" +
+                "<div id='tabTransfers' class='tab-content'>\n" +
+                "  <div class='card'>\n" +
                 "    <div class='table-container'>\n" +
                 "      <table><thead><tr><th>ID</th><th>Book</th><th>Route</th><th>Requester</th><th>Status</th><th>Action</th></tr></thead>\n" +
                 "      <tbody>" + trRows + "</tbody></table>\n" +
                 "    </div>\n" +
                 "  </div>\n" +
-                "  <!-- Purchase Requests -->\n" +
+                "</div>\n" +
+                "<!-- TAB 4: PURCHASES -->\n" +
+                "<div id='tabPurchases' class='tab-content'>\n" +
                 "  <div class='card'>\n" +
-                "    <h2 style='font-size: 1.25rem; font-weight: 700; margin-bottom: 1rem;'>✨ New Book Purchase Requests</h2>\n" +
                 "    <div class='table-container'>\n" +
                 "      <table><thead><tr><th>ID</th><th>Book Title</th><th>Author</th><th>Requester</th><th>Status</th><th>Action</th></tr></thead>\n" +
                 "      <tbody>" + prRows + "</tbody></table>\n" +
                 "    </div>\n" +
+                "  </div>\n" +
+                "</div>\n" +
+                "<!-- MODAL: ADD USER -->\n" +
+                "<div id='modalAddUser' class='modal-overlay'>\n" +
+                "  <div class='modal'>\n" +
+                "    <div class='modal-header'>\n" +
+                "      <h3 class='modal-title'>👥 Create New User Account</h3>\n" +
+                "      <button class='modal-close' onclick=\"closeModal('modalAddUser')\">×</button>\n" +
+                "    </div>\n" +
+                "    <form action='/action/createUser' method='POST'>\n" +
+                "      <div class='form-group'><label>Username</label><input type='text' name='username' placeholder='e.g. john_doe' required></div>\n" +
+                "      <div class='form-group'><label>Password</label><input type='password' name='password' placeholder='Enter password' required></div>\n" +
+                "      <div class='form-group'><label>Full Name</label><input type='text' name='fullName' placeholder='e.g. John Doe' required></div>\n" +
+                "      <div class='form-group'><label>Account Role</label>\n" +
+                "        <select name='role'>\n" +
+                "          <option value='MEMBER'>Member (Library Patron)</option>\n" +
+                "          <option value='ADMIN'>Admin (Librarian / Staff)</option>\n" +
+                "        </select>\n" +
+                "      </div>\n" +
+                "      <div class='form-group'><label>Assign Home Branch</label><select name='branchId'>" + branchOpts + "</select></div>\n" +
+                "      <button type='submit' class='btn btn-primary' style='width: 100%;'>Create Account</button>\n" +
+                "    </form>\n" +
                 "  </div>\n" +
                 "</div>\n" +
                 "<!-- MODAL: ADD BOOK -->\n" +
@@ -704,25 +831,28 @@ public class WebUI {
                 "      <button class='modal-close' onclick=\"closeModal('modalAddBook')\">×</button>\n" +
                 "    </div>\n" +
                 "    <form action='/action/addBook' method='POST'>\n" +
-                "      <div class='form-group'><label>Book ID (Integer)</label><input type='number' name='bookId' placeholder='e.g. 109' required></div>\n" +
-                "      <div class='form-group'><label>Book Title</label><input type='text' name='title' placeholder='e.g. Modern Software Engineering' required></div>\n" +
-                "      <div class='form-group'><label>Author</label><input type='text' name='author' placeholder='e.g. Dave Farley' required></div>\n" +
-                "      <div class='form-group'><label>Category / Genre</label><input type='text' name='category' placeholder='e.g. Software Engineering' value='General'></div>\n" +
+                "      <div class='form-group'><label>Book ID (Integer)</label><input type='number' name='bookId' placeholder='e.g. 111' required></div>\n" +
+                "      <div class='form-group'><label>Book Title</label><input type='text' name='title' placeholder='e.g. Designing Data-Intensive Applications' required></div>\n" +
+                "      <div class='form-group'><label>Author</label><input type='text' name='author' placeholder='e.g. Martin Kleppmann' required></div>\n" +
+                "      <div class='form-group'><label>Category / Genre</label><input type='text' name='category' placeholder='e.g. Distributed Systems' value='General'></div>\n" +
                 "      <div class='form-group'><label>Available Copies</label><input type='number' name='copies' value='3' min='1' required></div>\n" +
                 "      <div class='form-group'><label>Assign to Branch</label><select name='branchId'>" + branchOpts + "</select></div>\n" +
-                "      <button type='submit' class='btn btn-primary' style='width: 100%;'>Add Book to Database</button>\n" +
+                "      <button type='submit' class='btn btn-primary' style='width: 100%;'>Add Book to Catalog</button>\n" +
                 "    </form>\n" +
                 "  </div>\n" +
                 "</div>";
 
-            sendHtml(t, renderPage("Admin Console", "admin", t.getRequestURI().getQuery(), html));
+            sendHtml(t, renderPage("Admin Console", "admin", t.getRequestURI().getQuery(), currentUser, html));
         }
     }
 
-    // --- 4. BOOKS PUBLIC VIEW HANDLER ---
+    // =========================================================================
+    // 5. PUBLIC CATALOG DIRECTORY
+    // =========================================================================
     static class BooksViewHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange t) throws IOException {
+            User currentUser = AuthService.getCurrentUser();
             List<Book> books = LibraryService.fetchAllBooks();
             StringBuilder rows = new StringBuilder();
             for (Book b : books) {
@@ -748,25 +878,105 @@ public class WebUI {
                 "  </div>\n" +
                 "</div>";
 
-            sendHtml(t, renderPage("Catalog", "books", t.getRequestURI().getQuery(), html));
+            sendHtml(t, renderPage("Catalog", "books", t.getRequestURI().getQuery(), currentUser, html));
         }
     }
 
-    // --- ACTION HANDLERS ---
+    // =========================================================================
+    // 6. ACTION CONTROLLERS (Authentication & Management)
+    // =========================================================================
+
+    static class LoginActionHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange t) throws IOException {
+            if (!"POST".equalsIgnoreCase(t.getRequestMethod())) { redirect(t, "/login"); return; }
+            Map<String, String> body = parseBody(t.getRequestBody());
+            String u = body.get("username");
+            String p = body.get("password");
+            try {
+                User user = AuthService.login(u, p);
+                if (user.isAdmin()) {
+                    redirect(t, "/admin?msg=" + encode("Welcome back, Administrator " + user.getFullName() + "!"));
+                } else {
+                    redirect(t, "/user?msg=" + encode("Welcome back, " + user.getFullName() + "!"));
+                }
+            } catch (Exception e) {
+                redirect(t, "/login?error=" + encode(e.getMessage()));
+            }
+        }
+    }
+
+    static class LogoutActionHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange t) throws IOException {
+            AuthService.logout();
+            redirect(t, "/login?msg=" + encode("You have been signed out successfully."));
+        }
+    }
+
+    static class CreateUserActionHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange t) throws IOException {
+            if (!"POST".equalsIgnoreCase(t.getRequestMethod())) { redirect(t, "/admin"); return; }
+            User currentUser = AuthService.getCurrentUser();
+            if (currentUser == null || !currentUser.isAdmin()) {
+                redirect(t, "/login?error=" + encode("Admin access required."));
+                return;
+            }
+
+            Map<String, String> body = parseBody(t.getRequestBody());
+            try {
+                String username = body.get("username");
+                String password = body.get("password");
+                String fullName = body.get("fullName");
+                String role = body.getOrDefault("role", "MEMBER");
+                int branchId = Integer.parseInt(body.get("branchId"));
+
+                User newUser = new User(0, username, password, fullName, role, branchId);
+                AuthService.createUser(newUser);
+                redirect(t, "/admin?msg=" + encode("User account @" + username + " created successfully!"));
+            } catch (Exception e) {
+                redirect(t, "/admin?error=" + encode(e.getMessage()));
+            }
+        }
+    }
+
+    static class DeleteUserActionHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange t) throws IOException {
+            if (!"POST".equalsIgnoreCase(t.getRequestMethod())) { redirect(t, "/admin"); return; }
+            User currentUser = AuthService.getCurrentUser();
+            if (currentUser == null || !currentUser.isAdmin()) {
+                redirect(t, "/login?error=" + encode("Admin access required."));
+                return;
+            }
+
+            Map<String, String> body = parseBody(t.getRequestBody());
+            try {
+                int userId = Integer.parseInt(body.get("userId"));
+                AuthService.deleteUser(userId);
+                redirect(t, "/admin?msg=" + encode("User account #" + userId + " deleted."));
+            } catch (Exception e) {
+                redirect(t, "/admin?error=" + encode(e.getMessage()));
+            }
+        }
+    }
 
     static class BorrowActionHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange t) throws IOException {
             if (!"POST".equalsIgnoreCase(t.getRequestMethod())) { redirect(t, "/user"); return; }
+            User user = AuthService.getCurrentUser();
+            if (user == null) { redirect(t, "/login"); return; }
+
             Map<String, String> body = parseBody(t.getRequestBody());
             int bookId = Integer.parseInt(body.get("bookId"));
             int branch = Integer.parseInt(body.get("branch"));
-            String name = body.getOrDefault("name", "User");
             try {
                 String res = LibraryService.borrowBook(bookId, branch);
-                redirect(t, "/user?name=" + encode(name) + "&branch=" + branch + "&msg=" + encode("Book borrowed successfully! " + res));
+                redirect(t, "/user?msg=" + encode("Book borrowed successfully! " + res));
             } catch (Exception e) {
-                redirect(t, "/user?name=" + encode(name) + "&branch=" + branch + "&error=" + encode(e.getMessage()));
+                redirect(t, "/user?error=" + encode(e.getMessage()));
             }
         }
     }
@@ -775,15 +985,17 @@ public class WebUI {
         @Override
         public void handle(HttpExchange t) throws IOException {
             if (!"POST".equalsIgnoreCase(t.getRequestMethod())) { redirect(t, "/user"); return; }
+            User user = AuthService.getCurrentUser();
+            if (user == null) { redirect(t, "/login"); return; }
+
             Map<String, String> body = parseBody(t.getRequestBody());
             int bookId = Integer.parseInt(body.get("bookId"));
-            int branch = Integer.parseInt(body.get("branch"));
-            String name = body.getOrDefault("userName", "User");
+            int branch = user.getBranchId();
             try {
                 LibraryService.returnBook(bookId, branch);
-                redirect(t, "/user?name=" + encode(name) + "&branch=" + branch + "&msg=" + encode("Book returned successfully to this branch!"));
+                redirect(t, "/user?msg=" + encode("Book returned successfully to this branch!"));
             } catch (Exception e) {
-                redirect(t, "/user?name=" + encode(name) + "&branch=" + branch + "&error=" + encode(e.getMessage()));
+                redirect(t, "/user?error=" + encode(e.getMessage()));
             }
         }
     }
@@ -792,17 +1004,18 @@ public class WebUI {
         @Override
         public void handle(HttpExchange t) throws IOException {
             if (!"POST".equalsIgnoreCase(t.getRequestMethod())) { redirect(t, "/user"); return; }
+            User user = AuthService.getCurrentUser();
+            if (user == null) { redirect(t, "/login"); return; }
+
             Map<String, String> body = parseBody(t.getRequestBody());
             String bookName = body.get("bookName");
             String fromBranch = body.get("fromBranch");
             String toBranch = body.get("toBranch");
-            String name = body.getOrDefault("userName", "User");
-            String userBranch = body.getOrDefault("userBranch", "1");
             try {
-                RequestService.addTransferRequest(bookName, fromBranch, toBranch, name);
-                redirect(t, "/user?name=" + encode(name) + "&branch=" + userBranch + "&msg=" + encode("Transfer request submitted for '" + bookName + "'!"));
+                RequestService.addTransferRequest(bookName, fromBranch, toBranch, user.getFullName());
+                redirect(t, "/user?msg=" + encode("Transfer request submitted for '" + bookName + "'!"));
             } catch (Exception e) {
-                redirect(t, "/user?name=" + encode(name) + "&branch=" + userBranch + "&error=" + encode(e.getMessage()));
+                redirect(t, "/user?error=" + encode(e.getMessage()));
             }
         }
     }
@@ -811,16 +1024,17 @@ public class WebUI {
         @Override
         public void handle(HttpExchange t) throws IOException {
             if (!"POST".equalsIgnoreCase(t.getRequestMethod())) { redirect(t, "/user"); return; }
+            User user = AuthService.getCurrentUser();
+            if (user == null) { redirect(t, "/login"); return; }
+
             Map<String, String> body = parseBody(t.getRequestBody());
             String bookName = body.get("bookName");
             String author = body.getOrDefault("author", "Unknown");
-            String name = body.getOrDefault("userName", "User");
-            String userBranch = body.getOrDefault("branch", "1");
             try {
-                RequestService.addPurchaseRequest(bookName, author, name);
-                redirect(t, "/user?name=" + encode(name) + "&branch=" + userBranch + "&msg=" + encode("Purchase suggestion submitted for '" + bookName + "'!"));
+                RequestService.addPurchaseRequest(bookName, author, user.getFullName());
+                redirect(t, "/user?msg=" + encode("Purchase suggestion submitted for '" + bookName + "'!"));
             } catch (Exception e) {
-                redirect(t, "/user?name=" + encode(name) + "&branch=" + userBranch + "&error=" + encode(e.getMessage()));
+                redirect(t, "/user?error=" + encode(e.getMessage()));
             }
         }
     }
@@ -829,6 +1043,9 @@ public class WebUI {
         @Override
         public void handle(HttpExchange t) throws IOException {
             if (!"POST".equalsIgnoreCase(t.getRequestMethod())) { redirect(t, "/admin"); return; }
+            User user = AuthService.getCurrentUser();
+            if (user == null || !user.isAdmin()) { redirect(t, "/login"); return; }
+
             Map<String, String> body = parseBody(t.getRequestBody());
             try {
                 int bookId = Integer.parseInt(body.get("bookId"));
@@ -850,6 +1067,9 @@ public class WebUI {
         @Override
         public void handle(HttpExchange t) throws IOException {
             if (!"POST".equalsIgnoreCase(t.getRequestMethod())) { redirect(t, "/admin"); return; }
+            User user = AuthService.getCurrentUser();
+            if (user == null || !user.isAdmin()) { redirect(t, "/login"); return; }
+
             Map<String, String> body = parseBody(t.getRequestBody());
             try {
                 int bookId = Integer.parseInt(body.get("bookId"));
@@ -865,6 +1085,9 @@ public class WebUI {
         @Override
         public void handle(HttpExchange t) throws IOException {
             if (!"POST".equalsIgnoreCase(t.getRequestMethod())) { redirect(t, "/admin"); return; }
+            User user = AuthService.getCurrentUser();
+            if (user == null || !user.isAdmin()) { redirect(t, "/login"); return; }
+
             Map<String, String> body = parseBody(t.getRequestBody());
             int id = Integer.parseInt(body.get("id"));
             String status = body.get("status");
@@ -881,6 +1104,9 @@ public class WebUI {
         @Override
         public void handle(HttpExchange t) throws IOException {
             if (!"POST".equalsIgnoreCase(t.getRequestMethod())) { redirect(t, "/admin"); return; }
+            User user = AuthService.getCurrentUser();
+            if (user == null || !user.isAdmin()) { redirect(t, "/login"); return; }
+
             Map<String, String> body = parseBody(t.getRequestBody());
             int id = Integer.parseInt(body.get("id"));
             String status = body.get("status");
@@ -893,7 +1119,9 @@ public class WebUI {
         }
     }
 
-    // --- HELPER UTILITIES ---
+    // =========================================================================
+    // 7. HELPER UTILITIES
+    // =========================================================================
 
     private static Map<String, String> parseQuery(String query) {
         Map<String, String> map = new HashMap<>();
@@ -919,7 +1147,7 @@ public class WebUI {
 
     private static String encode(String val) {
         if (val == null) return "";
-        return java.net.URLEncoder.encode(val, StandardCharsets.UTF_8);
+        return URLEncoder.encode(val, StandardCharsets.UTF_8);
     }
 
     private static String escapeHtml(String input) {

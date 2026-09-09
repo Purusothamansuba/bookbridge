@@ -1,9 +1,10 @@
 package com.bookbridge.client.ui;
 
+import com.bookbridge.client.service.AuthService;
 import com.bookbridge.client.service.LibraryService;
 import com.bookbridge.client.service.RequestService;
 import com.bookbridge.model.Book;
-import com.bookbridge.model.Branch;
+import com.bookbridge.model.User;
 
 import java.util.List;
 import java.util.Map;
@@ -11,14 +12,15 @@ import java.util.Scanner;
 
 public class Menu {
 
-    private static final String[] MAIN = { "Member Portal", "Admin Portal", "View System Stats", "Exit" };
+    private static final String[] MAIN = { "Sign In (Member / Admin)", "View Public Catalog", "System Statistics", "Exit" };
 
     private static final String[] ADMIN = {
         "View All Books",
         "Add New Book",
+        "User Management (View & Create)",
         "View Transfer Requests",
         "View Purchase Requests",
-        "Back"
+        "Logout"
     };
 
     private static final String[] USER = {
@@ -26,7 +28,7 @@ public class Menu {
         "Search Book",
         "Borrow Book",
         "Return Book",
-        "Request Purchase",
+        "Suggest Purchase",
         "Logout"
     };
 
@@ -37,10 +39,10 @@ public class Menu {
             int choice = showMenu("📚 BOOKBRIDGE DISTRIBUTED LIBRARY", MAIN);
             switch (choice) {
                 case 0:
-                    userMenu();
+                    loginScreen();
                     break;
                 case 1:
-                    adminMenu();
+                    runScreenAction(LibraryService::viewAllBooks);
                     break;
                 case 2:
                     viewStatsScreen();
@@ -52,9 +54,43 @@ public class Menu {
         }
     }
 
-    private static void adminMenu() throws Exception {
+    private static void loginScreen() throws Exception {
+        Input.disableRawMode();
+        TerminalUI.clear();
+        TerminalUI.showCursor();
+
+        System.out.println("================ 🔑 SIGN IN ================");
+        System.out.println("Default Accounts:");
+        System.out.println(" • Admin: admin / admin123");
+        System.out.println(" • User : purushothaman / user123");
+        System.out.println("--------------------------------------------");
+
+        System.out.print("Username: ");
+        String username = sc.nextLine().trim();
+
+        System.out.print("Password: ");
+        String password = sc.nextLine().trim();
+
+        try {
+            User user = AuthService.login(username, password);
+            System.out.println("\n✅ Login successful! Welcome, " + user.getFullName() + " [" + user.getRole() + "]");
+            Thread.sleep(800);
+
+            if (user.isAdmin()) {
+                adminMenu(user);
+            } else {
+                userMenu(user);
+            }
+        } catch (Exception e) {
+            System.out.println("\n❌ Login Failed: " + e.getMessage());
+            System.out.println("\nPress Enter to return to main menu...");
+            sc.nextLine();
+        }
+    }
+
+    private static void adminMenu(User admin) throws Exception {
         while (true) {
-            int choice = showMenu("🛡️ ADMIN & LIBRARIAN CONSOLE", ADMIN);
+            int choice = showMenu("🛡️ ADMIN CONSOLE: " + admin.getUsername().toUpperCase(), ADMIN);
             switch (choice) {
                 case 0:
                     runScreenAction(LibraryService::viewAllBooks);
@@ -63,61 +99,87 @@ public class Menu {
                     addBookScreen();
                     break;
                 case 2:
-                    runScreenAction(RequestService::viewTransferRequests);
+                    userManagementScreen();
                     break;
                 case 3:
-                    runScreenAction(RequestService::viewPurchaseRequests);
+                    runScreenAction(RequestService::viewTransferRequests);
                     break;
                 case 4:
+                    runScreenAction(RequestService::viewPurchaseRequests);
+                    break;
+                case 5:
+                    AuthService.logout();
                     return;
             }
         }
     }
 
-    private static void userMenu() throws Exception {
-        Input.disableRawMode();
-        TerminalUI.clear();
-        TerminalUI.showCursor();
-
-        System.out.print("\nEnter your Name: ");
-        String name = sc.nextLine().trim();
-        if (name.isEmpty()) name = "Reader";
-
-        List<Branch> branches = LibraryService.getBranches();
-        System.out.println("\nSelect Your Current Active Branch:");
-        if (branches.isEmpty()) {
-            System.out.println("1. Guindy Library\n2. Adyar Library\n3. Velachery Library");
-        } else {
-            for (Branch b : branches) {
-                System.out.println(b.getBranchId() + ". " + b.getBranchName() + " (" + b.getLocation() + ")");
-            }
-        }
-        System.out.print("Enter branch ID: ");
-
-        int branch = readValidInt();
-
+    private static void userMenu(User user) throws Exception {
         while (true) {
-            int choice = showMenu("👤 MEMBER: " + name.toUpperCase(), USER);
+            int choice = showMenu("👤 MEMBER: " + user.getFullName().toUpperCase() + " (" + user.getBranchName() + ")", USER);
             switch (choice) {
                 case 0:
                     runScreenAction(LibraryService::viewAllBooks);
                     break;
                 case 1:
-                    searchBookScreen(branch, name);
+                    searchBookScreen(user.getBranchId(), user.getFullName());
                     break;
                 case 2:
-                    borrowBookScreen(branch);
+                    borrowBookScreen(user.getBranchId());
                     break;
                 case 3:
-                    returnBookScreen(branch);
+                    returnBookScreen(user.getBranchId());
                     break;
                 case 4:
-                    purchaseRequestScreen(name);
+                    purchaseRequestScreen(user.getFullName());
                     break;
                 case 5:
+                    AuthService.logout();
                     return;
             }
         }
+    }
+
+    private static void userManagementScreen() throws Exception {
+        Input.disableRawMode();
+        TerminalUI.clear();
+        TerminalUI.showCursor();
+
+        System.out.println("========== 👥 USER MANAGEMENT ==========");
+        List<User> users = AuthService.fetchAllUsers();
+        for (User u : users) {
+            System.out.printf("#%-3d | @%-15s | %-20s | Role: %-6s | %s\n",
+                u.getUserId(), u.getUsername(), u.getFullName(), u.getRole(),
+                (u.getBranchName() != null ? u.getBranchName() : "Branch " + u.getBranchId()));
+        }
+        System.out.println("----------------------------------------");
+        System.out.println("Options: [1] Create New User | [2] Return");
+        System.out.print("Enter choice: ");
+        String opt = sc.nextLine().trim();
+
+        if ("1".equals(opt)) {
+            System.out.println("\n--- Create New User ---");
+            System.out.print("Username: ");
+            String username = sc.nextLine().trim();
+            System.out.print("Password: ");
+            String password = sc.nextLine().trim();
+            System.out.print("Full Name: ");
+            String fullName = sc.nextLine().trim();
+            System.out.print("Role (MEMBER/ADMIN): ");
+            String role = sc.nextLine().trim().toUpperCase();
+            System.out.print("Branch ID (1=Guindy, 2=Adyar, 3=Velachery): ");
+            int branchId = readValidInt();
+
+            try {
+                AuthService.createUser(new User(0, username, password, fullName, role, branchId));
+                System.out.println("\n✅ User @" + username + " created successfully!");
+            } catch (Exception e) {
+                System.out.println("\n❌ Error creating user: " + e.getMessage());
+            }
+        }
+
+        System.out.println("\nPress Enter to return...");
+        sc.nextLine();
     }
 
     private static void addBookScreen() throws Exception {
@@ -262,6 +324,7 @@ public class Menu {
             System.out.println("Total Book Titles   : " + stats.getOrDefault("totalTitles", 0));
             System.out.println("Total Book Copies   : " + stats.getOrDefault("totalCopies", 0));
             System.out.println("Connected Branches  : " + stats.getOrDefault("totalBranches", 0));
+            System.out.println("Registered Users    : " + stats.getOrDefault("totalUsers", 0));
             System.out.println("Pending Transfers   : " + stats.getOrDefault("pendingTransfers", 0));
             System.out.println("Pending Purchases   : " + stats.getOrDefault("pendingPurchases", 0));
             System.out.println("Storage Engine      : " + (Boolean.TRUE.equals(stats.get("isInMemory")) ? "High-Speed In-Memory Store" : "MySQL Database Engine"));

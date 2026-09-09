@@ -4,6 +4,7 @@ import com.bookbridge.model.Book;
 import com.bookbridge.model.Branch;
 import com.bookbridge.model.PurchaseRequest;
 import com.bookbridge.model.TransferRequest;
+import com.bookbridge.model.User;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -29,10 +30,12 @@ public class DatabaseConnection {
     // --- IN-MEMORY FALLBACK DATA STORE (Thread-Safe) ---
     private static final Map<Integer, Branch> memoryBranches = new ConcurrentHashMap<>();
     private static final Map<Integer, Book> memoryBooks = new ConcurrentHashMap<>();
+    private static final Map<Integer, User> memoryUsers = new ConcurrentHashMap<>();
     private static final List<TransferRequest> memoryTransferRequests = new CopyOnWriteArrayList<>();
     private static final List<PurchaseRequest> memoryPurchaseRequests = new CopyOnWriteArrayList<>();
     private static final AtomicInteger transferIdGen = new AtomicInteger(100);
     private static final AtomicInteger purchaseIdGen = new AtomicInteger(100);
+    private static final AtomicInteger userIdGen = new AtomicInteger(10);
 
     static {
         loadConfig();
@@ -79,7 +82,7 @@ public class DatabaseConnection {
         } catch (Exception e) {
             useFallbackInMemory = true;
             System.out.println("⚠️  [Database] MySQL unavailable (" + e.getMessage() + ").");
-            System.out.println("🚀 [Database] Seamlessly initialized High-Speed In-Memory Data Store with seeded catalog.");
+            System.out.println("🚀 [Database] Seamlessly initialized High-Speed In-Memory Data Store with seeded catalog & accounts.");
             seedInMemoryData();
         }
         initialized = true;
@@ -88,6 +91,7 @@ public class DatabaseConnection {
     private static void initMySqlSchema(Connection conn) {
         try (Statement stmt = conn.createStatement()) {
             stmt.execute("CREATE TABLE IF NOT EXISTS branches (branch_id INT PRIMARY KEY, branch_name VARCHAR(100), location VARCHAR(100))");
+            stmt.execute("CREATE TABLE IF NOT EXISTS users (user_id INT AUTO_INCREMENT PRIMARY KEY, username VARCHAR(50) UNIQUE NOT NULL, password VARCHAR(100) NOT NULL, full_name VARCHAR(100) NOT NULL, role VARCHAR(20) NOT NULL DEFAULT 'MEMBER', branch_id INT, created_at VARCHAR(50))");
             stmt.execute("CREATE TABLE IF NOT EXISTS books (book_id INT PRIMARY KEY, title VARCHAR(100), author VARCHAR(100), available_copies INT, branch_id INT, category VARCHAR(100) DEFAULT 'Computer Science')");
             stmt.execute("CREATE TABLE IF NOT EXISTS transfer_requests (id INT AUTO_INCREMENT PRIMARY KEY, book_name VARCHAR(100), from_branch VARCHAR(100), to_branch VARCHAR(100), requester_name VARCHAR(100) DEFAULT 'Member', status VARCHAR(50) DEFAULT 'PENDING', request_date VARCHAR(50))");
             stmt.execute("CREATE TABLE IF NOT EXISTS purchase_requests (id INT AUTO_INCREMENT PRIMARY KEY, book_name VARCHAR(100), author VARCHAR(100) DEFAULT 'Unknown', requester_name VARCHAR(100) DEFAULT 'Member', status VARCHAR(50) DEFAULT 'PENDING', request_date VARCHAR(50))");
@@ -96,6 +100,14 @@ public class DatabaseConnection {
             ResultSet rs = stmt.executeQuery("SELECT COUNT(*) FROM branches");
             if (rs.next() && rs.getInt(1) == 0) {
                 stmt.executeUpdate("INSERT INTO branches VALUES (1, 'Guindy Library', 'Guindy'), (2, 'Adyar Library', 'Adyar'), (3, 'Velachery Library', 'Velachery')");
+                
+                // Seed Users
+                stmt.executeUpdate("INSERT INTO users (user_id, username, password, full_name, role, branch_id, created_at) VALUES " +
+                        "(1, 'admin', 'admin123', 'System Administrator', 'ADMIN', 1, '2026-09-09 10:00'), " +
+                        "(2, 'purushothaman', 'user123', 'Purushothaman', 'MEMBER', 1, '2026-09-09 10:00'), " +
+                        "(3, 'alice', 'user123', 'Alice Johnson', 'MEMBER', 2, '2026-09-09 10:00')");
+
+                // Seed Books
                 stmt.executeUpdate("INSERT INTO books (book_id, title, author, available_copies, branch_id, category) VALUES " +
                         "(101, 'Clean Code', 'Robert C. Martin', 5, 1, 'Software Engineering'), " +
                         "(102, 'Java: The Complete Reference', 'Herbert Schildt', 3, 1, 'Programming'), " +
@@ -116,6 +128,16 @@ public class DatabaseConnection {
         memoryBranches.put(2, new Branch(2, "Adyar Library", "Adyar"));
         memoryBranches.put(3, new Branch(3, "Velachery Library", "Velachery"));
 
+        // Seed Users
+        User admin = new User(1, "admin", "admin123", "System Administrator", "ADMIN", 1, "Guindy Library", "2026-09-09 10:00");
+        User user1 = new User(2, "purushothaman", "user123", "Purushothaman", "MEMBER", 1, "Guindy Library", "2026-09-09 10:00");
+        User user2 = new User(3, "alice", "user123", "Alice Johnson", "MEMBER", 2, "Adyar Library", "2026-09-09 10:00");
+
+        memoryUsers.put(admin.getUserId(), admin);
+        memoryUsers.put(user1.getUserId(), user1);
+        memoryUsers.put(user2.getUserId(), user2);
+
+        // Seed Books
         Book[] seedBooks = new Book[] {
             new Book(101, "Clean Code", "Robert C. Martin", 5, 1, "Software Engineering"),
             new Book(102, "Java: The Complete Reference", "Herbert Schildt", 3, 1, "Programming"),
@@ -133,8 +155,8 @@ public class DatabaseConnection {
             memoryBooks.put(b.getBookId(), b);
         }
 
-        memoryTransferRequests.add(new TransferRequest(transferIdGen.incrementAndGet(), "Clean Code", "Guindy Library", "Adyar Library", "Alice", "PENDING", new SimpleDateFormat("yyyy-MM-dd HH:mm").format(new Date())));
-        memoryPurchaseRequests.add(new PurchaseRequest(purchaseIdGen.incrementAndGet(), "Refactoring: Improving the Design of Existing Code", "Martin Fowler", "Bob", "PENDING", new SimpleDateFormat("yyyy-MM-dd HH:mm").format(new Date())));
+        memoryTransferRequests.add(new TransferRequest(transferIdGen.incrementAndGet(), "Clean Code", "Guindy Library", "Adyar Library", "Alice Johnson", "PENDING", new SimpleDateFormat("yyyy-MM-dd HH:mm").format(new Date())));
+        memoryPurchaseRequests.add(new PurchaseRequest(purchaseIdGen.incrementAndGet(), "Refactoring: Improving the Design of Existing Code", "Martin Fowler", "Purushothaman", "PENDING", new SimpleDateFormat("yyyy-MM-dd HH:mm").format(new Date())));
     }
 
     public static Connection getConnection() throws SQLException {
@@ -144,7 +166,142 @@ public class DatabaseConnection {
     }
 
     // =========================================================================
-    // HIGH-LEVEL THREAD-SAFE DATA ACCESS METHODS (Support MySQL & In-Memory)
+    // AUTHENTICATION & USER MANAGEMENT
+    // =========================================================================
+
+    public static User authenticate(String username, String password) throws Exception {
+        if (username == null || password == null) {
+            throw new Exception("Username and password are required.");
+        }
+        String u = username.trim();
+        String p = password.trim();
+
+        if (useFallbackInMemory) {
+            for (User user : memoryUsers.values()) {
+                if (user.getUsername().equalsIgnoreCase(u) && user.getPassword().equals(p)) {
+                    Branch br = memoryBranches.get(user.getBranchId());
+                    user.setBranchName(br != null ? br.getBranchName() : "Branch " + user.getBranchId());
+                    return user;
+                }
+            }
+            throw new Exception("Invalid username or password.");
+        }
+
+        try (Connection conn = getConnection();
+             PreparedStatement ps = conn.prepareStatement("SELECT u.*, b.branch_name FROM users u LEFT JOIN branches b ON u.branch_id = b.branch_id WHERE LOWER(u.username) = LOWER(?) AND u.password = ?")) {
+            ps.setString(1, u);
+            ps.setString(2, p);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return new User(
+                        rs.getInt("user_id"),
+                        rs.getString("username"),
+                        rs.getString("password"),
+                        rs.getString("full_name"),
+                        rs.getString("role"),
+                        rs.getInt("branch_id"),
+                        rs.getString("branch_name"),
+                        rs.getString("created_at")
+                    );
+                }
+            }
+        } catch (SQLException e) {
+            throw new Exception("Database error during authentication: " + e.getMessage());
+        }
+        throw new Exception("Invalid username or password.");
+    }
+
+    public static synchronized void createUser(User user) throws Exception {
+        if (user == null || user.getUsername() == null || user.getPassword() == null) {
+            throw new Exception("User details are incomplete.");
+        }
+        String username = user.getUsername().trim().toLowerCase();
+
+        if (useFallbackInMemory) {
+            for (User u : memoryUsers.values()) {
+                if (u.getUsername().equalsIgnoreCase(username)) {
+                    throw new Exception("Username '" + user.getUsername() + "' is already registered.");
+                }
+            }
+            user.setUserId(userIdGen.incrementAndGet());
+            Branch br = memoryBranches.get(user.getBranchId());
+            if (br != null) user.setBranchName(br.getBranchName());
+            memoryUsers.put(user.getUserId(), user);
+            return;
+        }
+
+        try (Connection conn = getConnection();
+             PreparedStatement ps = conn.prepareStatement("INSERT INTO users (username, password, full_name, role, branch_id, created_at) VALUES (?, ?, ?, ?, ?, ?)")) {
+            ps.setString(1, user.getUsername());
+            ps.setString(2, user.getPassword());
+            ps.setString(3, user.getFullName());
+            ps.setString(4, user.getRole() != null ? user.getRole() : "MEMBER");
+            ps.setInt(5, user.getBranchId());
+            ps.setString(6, user.getCreatedAt());
+            ps.executeUpdate();
+        } catch (SQLException e) {
+            if (e.getMessage().toLowerCase().contains("duplicate") || e.getMessage().toLowerCase().contains("unique")) {
+                throw new Exception("Username '" + user.getUsername() + "' is already registered.");
+            }
+            throw new Exception("Database error creating user: " + e.getMessage());
+        }
+    }
+
+    public static List<User> getAllUsers() {
+        List<User> list = new ArrayList<>();
+        if (useFallbackInMemory) {
+            for (User u : memoryUsers.values()) {
+                Branch br = memoryBranches.get(u.getBranchId());
+                u.setBranchName(br != null ? br.getBranchName() : "Branch " + u.getBranchId());
+                list.add(u);
+            }
+            list.sort(Comparator.comparingInt(User::getUserId));
+            return list;
+        }
+
+        try (Connection conn = getConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery("SELECT u.*, b.branch_name FROM users u LEFT JOIN branches b ON u.branch_id = b.branch_id ORDER BY u.user_id ASC")) {
+            while (rs.next()) {
+                list.add(new User(
+                    rs.getInt("user_id"),
+                    rs.getString("username"),
+                    "***", // Hide raw password from user list
+                    rs.getString("full_name"),
+                    rs.getString("role"),
+                    rs.getInt("branch_id"),
+                    rs.getString("branch_name"),
+                    rs.getString("created_at")
+                ));
+            }
+        } catch (SQLException e) {
+            System.err.println("[Database Error] getAllUsers: " + e.getMessage());
+        }
+        return list;
+    }
+
+    public static synchronized void deleteUser(int userId) throws Exception {
+        if (userId == 1) {
+            throw new Exception("Cannot delete the root System Administrator.");
+        }
+
+        if (useFallbackInMemory) {
+            if (memoryUsers.remove(userId) == null) {
+                throw new Exception("User ID #" + userId + " not found.");
+            }
+            return;
+        }
+
+        try (Connection conn = getConnection();
+             PreparedStatement ps = conn.prepareStatement("DELETE FROM users WHERE user_id = ?")) {
+            ps.setInt(1, userId);
+            int count = ps.executeUpdate();
+            if (count == 0) throw new Exception("User ID #" + userId + " not found.");
+        }
+    }
+
+    // =========================================================================
+    // BOOK & CATALOG OPERATIONS
     // =========================================================================
 
     public static List<Book> getAllBooks() {
@@ -541,6 +698,7 @@ public class DatabaseConnection {
         for (Book b : books) totalCopies += b.getAvailableCopies();
 
         int totalBranches = getBranches().size();
+        int totalUsers = getAllUsers().size();
         int pendingTransfers = 0;
         for (TransferRequest tr : getTransferRequests()) {
             if ("PENDING".equalsIgnoreCase(tr.getStatus())) pendingTransfers++;
@@ -553,6 +711,7 @@ public class DatabaseConnection {
         stats.put("totalTitles", totalTitles);
         stats.put("totalCopies", totalCopies);
         stats.put("totalBranches", totalBranches);
+        stats.put("totalUsers", totalUsers);
         stats.put("pendingTransfers", pendingTransfers);
         stats.put("pendingPurchases", pendingPurchases);
         stats.put("isInMemory", useFallbackInMemory);
